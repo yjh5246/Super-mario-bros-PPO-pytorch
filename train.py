@@ -96,7 +96,7 @@ def train(opt):
             # 记录当前批次的状态，作为模型输入。
             states.append(curr_states)
             logits, value = model(curr_states)
-            values.append(value.view(-1))
+            values.append(value.squeeze())
 
             # 根据当前策略采样动作，并计算该动作对应的旧策略对数概率。
             policy = F.softmax(logits, dim=1)
@@ -128,7 +128,7 @@ def train(opt):
 
         # 计算最后一个时间步的 next_value，并使用 GAE 估计优势函数和回报目标。
         _, next_value, = model(curr_states)
-        next_value = next_value.view(-1)
+        next_value = next_value.squeeze()
         old_log_policies = torch.cat(old_log_policies).detach()
         actions = torch.cat(actions)
         values = torch.cat(values).detach()

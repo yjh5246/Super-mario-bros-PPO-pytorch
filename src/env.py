@@ -47,7 +47,6 @@ class CustomReward(Wrapper):
         self.observation_space = Box(low=0, high=255, shape=(1, 84, 84))
         self.curr_score = 0
         self.current_x = 40
-        self.current_time = 400
         self.world = world
         self.stage = stage
         if monitor:
@@ -68,18 +67,13 @@ class CustomReward(Wrapper):
         state = process_frame(state)
 
         # 奖励设计: 前进距离、分数增量、时间压力共同推动模型持续前行。
-        x_delta = info["x_pos"] - self.current_x
-        score_delta = info["score"] - self.curr_score
-        time_delta = self.current_time - info["time"]
-        reward += np.clip(x_delta / 40., -1., 1.)
-        reward += np.clip(score_delta / 400., -1., 1.)
-        reward -= max(time_delta, 0) / 400.
+        reward += (info["score"] - self.curr_score) / 40.
         self.curr_score = info["score"]
         if done:
             if info["flag_get"]:
-                reward += 100
+                reward += 50
             else:
-                reward -= 100
+                reward -= 50
         if self.world == 7 and self.stage == 4:
             if (506 <= info["x_pos"] <= 832 and info["y_pos"] > 127) or (
                     832 < info["x_pos"] <= 1064 and info["y_pos"] < 80) or (
@@ -97,14 +91,12 @@ class CustomReward(Wrapper):
                 done = True
 
         self.current_x = info["x_pos"]
-        self.current_time = info["time"]
         return state, reward / 10., done, info
 
     def reset(self):
         # 每次重置时清空累计得分和位置信息，保证同一关卡的奖励统计从零开始。
         self.curr_score = 0
         self.current_x = 40
-        self.current_time = 400
         return process_frame(self.env.reset())
 
 
