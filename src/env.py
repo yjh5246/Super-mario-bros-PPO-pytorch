@@ -15,7 +15,7 @@ import torch.multiprocessing as mp
 
 class Monitor:
     def __init__(self, width, height, saved_path):
-
+        # 录制视频时使用 ffmpeg 将 RGB 帧写入管道，输出到目标文件。
         self.command = ["ffmpeg", "-y", "-f", "rawvideo", "-vcodec", "rawvideo", "-s", "{}X{}".format(width, height),
                         "-pix_fmt", "rgb24", "-r", "60", "-i", "-", "-an", "-vcodec", "mpeg4", saved_path]
         try:
@@ -24,10 +24,12 @@ class Monitor:
             pass
 
     def record(self, image_array):
+        # 每一帧都转换成原始字节流，送入 ffmpeg 进行编码。
         self.pipe.stdin.write(image_array.tobytes())
 
 
 def process_frame(frame):
+    # 处理环境返回的图像观测，统一为单通道 84x84 的灰度状态输入。
     if isinstance(frame, tuple):
         frame = frame[0]
     if frame is not None:
@@ -41,6 +43,7 @@ def process_frame(frame):
 class CustomReward(Wrapper):
     def __init__(self, env=None, world=None, stage=None, monitor=None):
         super(CustomReward, self).__init__(env)
+        # 这里将观测栈压缩成单帧 84x84 的表征，适配 PPO 网络输入。
         self.observation_space = Box(low=0, high=255, shape=(1, 84, 84))
         self.curr_score = 0
         self.current_x = 40
@@ -53,6 +56,7 @@ class CustomReward(Wrapper):
             self.monitor = None
 
     def step(self, action):
+        # 兼容 Gymnasium 5 元组返回值（state, reward, terminated, truncated, info）和旧接口。
         result = self.env.step(action)
         if len(result) == 5:
             state, reward, terminated, truncated, info = result
@@ -63,6 +67,7 @@ class CustomReward(Wrapper):
             self.monitor.record(state)
         state = process_frame(state)
 
+        # 奖励设计: 前进距离、分数增量、时间压力共同推动模型持续前行。
         x_delta = info["x_pos"] - self.current_x
         score_delta = info["score"] - self.curr_score
         time_delta = self.current_time - info["time"]
@@ -96,6 +101,7 @@ class CustomReward(Wrapper):
         return state, reward / 10., done, info
 
     def reset(self):
+        # 每次重置时清空累计得分和位置信息，保证同一关卡的奖励统计从零开始。
         self.curr_score = 0
         self.current_x = 40
         self.current_time = 400
@@ -105,6 +111,7 @@ class CustomReward(Wrapper):
 class CustomSkipFrame(Wrapper):
     def __init__(self, env, skip=4):
         super(CustomSkipFrame, self).__init__(env)
+        # 跳帧包装用来叠加连续 4 帧观测，模拟动作连续性并降低训练开销。
         self.observation_space = Box(low=0, high=255, shape=(skip, 84, 84))
         self.skip = skip
         self.states = np.zeros((skip, 84, 84), dtype=np.float32)
@@ -120,6 +127,7 @@ class CustomSkipFrame(Wrapper):
             if done:
                 self.reset()
                 return self.states[None, :, :, :].astype(np.float32), total_reward, done, info
+        # 每个动作周期保留中间最关键的最大帧，帮助网络忽略短时噪声。
         max_state = np.max(np.concatenate(last_states, 0), 0)
         self.states[:-1] = self.states[1:]
         self.states[-1] = max_state
@@ -132,6 +140,7 @@ class CustomSkipFrame(Wrapper):
 
 
 def create_train_env(world, stage, actions, output_path=None, render_mode=None):
+    # 创建关卡环境，并按动作集合绑定操控方式。render_mode 用于“人类观察”窗口。
     env = gym_super_mario_bros.make(
         "SuperMarioBros-{}-{}-v0".format(world, stage),
         render_mode=render_mode,
@@ -149,6 +158,7 @@ def create_train_env(world, stage, actions, output_path=None, render_mode=None):
 
 class MultipleEnvironments:
     def __init__(self, world, stage, action_type, num_envs, output_path=None):
+        # 使用多进程并行采样，父进程只负责发送动作、接收状态，避免 Windows 下 spawn 复杂对象导致的错误。
         self.agent_conns, self.env_conns = zip(*[mp.Pipe() for _ in range(num_envs)])
         if action_type == "right":
             actions = RIGHT_ONLY
@@ -168,6 +178,7 @@ class MultipleEnvironments:
 
 
 def run_environment(agent_conn, env_conn, world, stage, actions, output_path):
+    # 子进程中的运行循环负责创建环境并响应父进程的 step/reset 请求。
     agent_conn.close()
     env = create_train_env(world, stage, actions, output_path=output_path)
     while True:
