@@ -3,8 +3,8 @@
 """
 
 import gym_super_mario_bros
-from gym.spaces import Box
-from gym import Wrapper
+from gymnasium.spaces import Box
+from gymnasium import Wrapper
 from nes_py.wrappers import JoypadSpace
 from gym_super_mario_bros.actions import SIMPLE_MOVEMENT, COMPLEX_MOVEMENT, RIGHT_ONLY
 import cv2
@@ -24,10 +24,12 @@ class Monitor:
             pass
 
     def record(self, image_array):
-        self.pipe.stdin.write(image_array.tostring())
+        self.pipe.stdin.write(image_array.tobytes())
 
 
 def process_frame(frame):
+    if isinstance(frame, tuple):
+        frame = frame[0]
     if frame is not None:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         frame = cv2.resize(frame, (84, 84))[None, :, :] / 255.
@@ -42,6 +44,7 @@ class CustomReward(Wrapper):
         self.observation_space = Box(low=0, high=255, shape=(1, 84, 84))
         self.curr_score = 0
         self.current_x = 40
+        self.current_time = 400
         self.world = world
         self.stage = stage
         if monitor:
@@ -50,17 +53,28 @@ class CustomReward(Wrapper):
             self.monitor = None
 
     def step(self, action):
-        state, reward, done, info = self.env.step(action)
+        result = self.env.step(action)
+        if len(result) == 5:
+            state, reward, terminated, truncated, info = result
+            done = terminated or truncated
+        else:
+            state, reward, done, info = result
         if self.monitor:
             self.monitor.record(state)
         state = process_frame(state)
-        reward += (info["score"] - self.curr_score) / 40.
+
+        x_delta = info["x_pos"] - self.current_x
+        score_delta = info["score"] - self.curr_score
+        time_delta = self.current_time - info["time"]
+        reward += np.clip(x_delta / 40., -1., 1.)
+        reward += np.clip(score_delta / 400., -1., 1.)
+        reward -= max(time_delta, 0) / 400.
         self.curr_score = info["score"]
         if done:
             if info["flag_get"]:
-                reward += 50
+                reward += 100
             else:
-                reward -= 50
+                reward -= 100
         if self.world == 7 and self.stage == 4:
             if (506 <= info["x_pos"] <= 832 and info["y_pos"] > 127) or (
                     832 < info["x_pos"] <= 1064 and info["y_pos"] < 80) or (
@@ -78,11 +92,13 @@ class CustomReward(Wrapper):
                 done = True
 
         self.current_x = info["x_pos"]
+        self.current_time = info["time"]
         return state, reward / 10., done, info
 
     def reset(self):
         self.curr_score = 0
         self.current_x = 40
+        self.current_time = 400
         return process_frame(self.env.reset())
 
 
@@ -115,8 +131,11 @@ class CustomSkipFrame(Wrapper):
         return self.states[None, :, :, :].astype(np.float32)
 
 
-def create_train_env(world, stage, actions, output_path=None):
-    env = gym_super_mario_bros.make("SuperMarioBros-{}-{}-v0".format(world, stage))
+def create_train_env(world, stage, actions, output_path=None, render_mode=None):
+    env = gym_super_mario_bros.make(
+        "SuperMarioBros-{}-{}-v0".format(world, stage),
+        render_mode=render_mode,
+    )
     if output_path:
         monitor = Monitor(256, 240, output_path)
     else:
@@ -137,21 +156,25 @@ class MultipleEnvironments:
             actions = SIMPLE_MOVEMENT
         else:
             actions = COMPLEX_MOVEMENT
-        self.envs = [create_train_env(world, stage, actions, output_path=output_path) for _ in range(num_envs)]
-        self.num_states = self.envs[0].observation_space.shape[0]
+        self.num_states = 4
         self.num_actions = len(actions)
         for index in range(num_envs):
-            process = mp.Process(target=self.run, args=(index,))
+            process = mp.Process(
+                target=run_environment,
+                args=(self.agent_conns[index], self.env_conns[index], world, stage, actions, output_path),
+            )
             process.start()
             self.env_conns[index].close()
 
-    def run(self, index):
-        self.agent_conns[index].close()
-        while True:
-            request, action = self.env_conns[index].recv()
-            if request == "step":
-                self.env_conns[index].send(self.envs[index].step(action.item()))
-            elif request == "reset":
-                self.env_conns[index].send(self.envs[index].reset())
-            else:
-                raise NotImplementedError
+
+def run_environment(agent_conn, env_conn, world, stage, actions, output_path):
+    agent_conn.close()
+    env = create_train_env(world, stage, actions, output_path=output_path)
+    while True:
+        request, action = env_conn.recv()
+        if request == "step":
+            env_conn.send(env.step(action.item()))
+        elif request == "reset":
+            env_conn.send(env.reset())
+        else:
+            raise NotImplementedError

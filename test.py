@@ -36,7 +36,8 @@ def test(opt):
     else:
         actions = COMPLEX_MOVEMENT
     env = create_train_env(opt.world, opt.stage, actions,
-                           "{}/video_{}_{}.mp4".format(opt.output_path, opt.world, opt.stage))
+                           "{}/video_{}_{}.mp4".format(opt.output_path, opt.world, opt.stage),
+                           render_mode="human")
     model = PPO(env.observation_space.shape[0], len(actions))
     if torch.cuda.is_available():
         model.load_state_dict(torch.load("{}/ppo_super_mario_bros_{}_{}".format(opt.saved_path, opt.world, opt.stage)))

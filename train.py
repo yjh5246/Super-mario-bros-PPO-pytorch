@@ -82,7 +82,7 @@ def train(opt):
         for _ in range(opt.num_local_steps):
             states.append(curr_states)
             logits, value = model(curr_states)
-            values.append(value.squeeze())
+            values.append(value.view(-1))
             policy = F.softmax(logits, dim=1)
             old_m = Categorical(policy)
             action = old_m.sample()
@@ -98,8 +98,8 @@ def train(opt):
             state = torch.from_numpy(np.concatenate(state, 0))
             if torch.cuda.is_available():
                 state = state.cuda()
-                reward = torch.cuda.FloatTensor(reward)
-                done = torch.cuda.FloatTensor(done)
+                reward = torch.tensor(reward, dtype=torch.float32, device='cuda')
+                done = torch.tensor(done, dtype=torch.float32, device='cuda')
             else:
                 reward = torch.FloatTensor(reward)
                 done = torch.FloatTensor(done)
@@ -108,7 +108,7 @@ def train(opt):
             curr_states = state
 
         _, next_value, = model(curr_states)
-        next_value = next_value.squeeze()
+        next_value = next_value.view(-1)
         old_log_policies = torch.cat(old_log_policies).detach()
         actions = torch.cat(actions)
         values = torch.cat(values).detach()
